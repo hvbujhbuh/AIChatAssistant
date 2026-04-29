@@ -1,69 +1,64 @@
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 public class ClaudeClient {
-    // 最大重试次数
-    private static final int MAX_RETRY = 3;
-    // 接口超时时间 毫秒
-    private static final int TIME_OUT = 10000;
 
-    public String chat(String apiKey, String prompt) {
-        String jsonBody = "{\"model\":\"claude-3-sonnet-20240229\",\"max_tokens\":1024,\"messages\":[{\"role\":\"user\",\"content\":\"" + prompt + "\"}]}";
+    private static final String API_URL = "https://api.siliconflow.cn/v1/chat/completions";
+    private static final String MODEL = "Qwen/Qwen2.5-7B-Instruct";
 
-        // 重试逻辑
-        for (int retry = 1; retry <= MAX_RETRY; retry++) {
-            try {
-                URL url = new URL("https://api.anthropic.com/v1/messages");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+    private final String apiKey;
+    private final HttpClient httpClient;
+    private final ObjectMapper mapper;
 
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setConnectTimeout(TIME_OUT);
-                conn.setReadTimeout(TIME_OUT);
+    public ClaudeClient(String apiKey) {
+        this.apiKey = apiKey;
+        this.httpClient = HttpClient.newHttpClient();
+        this.mapper = new ObjectMapper();
+    }
 
-                // 请求头
-                conn.setRequestProperty("x-api-key", apiKey);
-                conn.setRequestProperty("anthropic-version", "2023-06-01");
-                conn.setRequestProperty("Content-Type", "application/json");
+    public String chat(List<Map<String, String>> messages, String systemPrompt) throws Exception {
+        List<Map<String, String>> fullMessages = new ArrayList<>();
 
-                // 发送请求体
-                try (OutputStream os = conn.getOutputStream()) {
-                    byte[] input = jsonBody.getBytes("UTF-8");
-                    os.write(input, 0, input.length);
-                }
+        Map<String, String> systemMsg = new HashMap<>();
+        systemMsg.put("role", "system");
+        systemMsg.put("content", systemPrompt);
+        fullMessages.add(systemMsg);
+        fullMessages.addAll(messages);
 
-                // 读取返回结果
-                StringBuilder response = new StringBuilder();
-                try (BufferedReader br = new BufferedReader(
-                        new InputStreamReader(conn.getInputStream(), "UTF-8"))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        response.append(line);
-                    }
-                }
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("model", MODEL);
+        requestBody.put("max_tokens", 1024);
+        requestBody.put("messages", fullMessages);
 
-                conn.disconnect();
-                // 请求成功，直接返回
-                return response.toString();
+        String jsonBody = mapper.writeValueAsString(requestBody);
 
-            } catch (IOException e) {
-                System.out.println("第" + retry + "次请求失败：" + e.getMessage());
-                if (retry == MAX_RETRY) {
-                    System.out.println("已达到最大重试次数，请求彻底失败");
-                    return "网络请求失败，请稍后再试";
-                }
-                // 重试前休眠1秒
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                }
-            }
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(API_URL))
+            .header("Content-Type", "application/json")
+            .header("Authorization", "Bearer " + apiKey)
+            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+            .build();
+
+        HttpResponse<String> response = httpClient.send(
+            request,
+            HttpResponse.BodyHandlers.ofString()
+        );
+
+        if (response.statusCode() != 200) {
+            throw new RuntimeException(
+                "API request failed with status " + response.statusCode() + "\nResponse: " + response.body()
+            );
         }
-        return "未知错误";
+
+        return mapper.readTree(response.body())
+            .path("choices").get(0)
+            .path("message").path("content").asText();
     }
 }
